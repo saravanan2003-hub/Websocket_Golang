@@ -51,10 +51,17 @@ func main() {
 					fmt.Println(string(msg))
 				}
 			}()
-			select {} // Keeps the program running to receive messages
+
+			var input string
+			fmt.Scan(&input)
+			if input == "q" {
+				break
+			}
 
 		case "3":
 			fmt.Println("Exiting...")
+			leave_msg := fmt.Sprintf("%s leave from chat room", username)
+			conn.WriteMessage(websocket.TextMessage, []byte(leave_msg))
 			conn.Close()
 			return
 

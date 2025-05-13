@@ -1,15 +1,25 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
-	"net/http"
-
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/gorilla/websocket"
+	"log"
+	"net/http"
+	"sync"
 )
+
+type Message struct {
+	Username string
+	Content  string
+}
 
 var (
 	user      = make(map[*websocket.Conn]string)
-	broadcast = make(chan string)
+	broadcast = make(chan Message)
+	mutex     sync.Mutex
+	db        *sql.DB
 	upgrader  = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true // allow all origins (for local testing)
@@ -31,19 +41,42 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	fmt.Println("DB instance is:", db)
+	if db == nil {
+		fmt.Println("DB is nil 🔥")
+	}
+
 	username := string(username_message)
+	mutex.Lock()
+	username_insert_query := "INSERT INTO user (username) VALUES (?)"
+	_, err = db.Exec(username_insert_query, username)
+	if err != nil {
+		log.Fatal("Insert failed:", err)
+	}
 	user[conn] = username
+	mutex.Unlock()
+
+	join_msg := Message{
+		Username: username,
+		Content:  "Joined this room",
+	}
+	broadcast <- join_msg
 
 	for {
-		_, msg, err := conn.ReadMessage()
+		_, actual_msg, err := conn.ReadMessage()
 		if err != nil {
+			mutex.Lock()
 			delete(user, conn)
+			mutex.Unlock()
 			conn.Close()
 			break
 		}
 
-		final := fmt.Sprintf("%s: %s", username, string(msg))
-		broadcast <- final
+		msg := Message{
+			Username: username,
+			Content:  string(actual_msg), // msgBytes is the message from client
+		}
+		broadcast <- msg
 
 	}
 
@@ -52,21 +85,66 @@ func handleConnections(w http.ResponseWriter, r *http.Request) {
 func handleBroadcast() {
 	for {
 		msg := <-broadcast
+
+		// 1. Store the incoming message in DB
+		messageInsert := "INSERT INTO chat (username, message) VALUES (?, ?)"
+		_, err := db.Exec(messageInsert, msg.Username, msg.Content)
+		if err != nil {
+			log.Println("Insert failed:", err)
+			continue
+		}
+
+		// 2. Fetch the messages from DB
+		getMsgQuery := "SELECT username, message FROM chat ORDER BY time DESC"
+		rows, err := db.Query(getMsgQuery)
+		if err != nil {
+			log.Println("Fetch failed:", err)
+			continue
+		}
+		defer rows.Close()
+
+		// 3. Combine messages into one string
+		var finalMsg string
+		for rows.Next() {
+			var username, content string
+			rows.Scan(&username, &content)
+			finalMsg = fmt.Sprintf("%s%s: %s\n", finalMsg, username, content)
+		}
+
+		// 4. Send to all users
+		mutex.Lock()
 		for conn := range user {
-			err := conn.WriteMessage(websocket.TextMessage, []byte(msg))
+			err := conn.WriteMessage(websocket.TextMessage, []byte(finalMsg))
 			if err != nil {
 				fmt.Println("Write error:", err)
 				conn.Close()
 				delete(user, conn)
 			}
 		}
+		mutex.Unlock()
 	}
 }
 
 func main() {
+
+	dsn := "root:rootpass@tcp(127.0.0.1:3306)/chatApp"
+
+	var err error                    // declare err only
+	db, err = sql.Open("mysql", dsn) // assign to global db
+	if err != nil {
+		log.Fatal("DB connection failed:", err)
+	}
+	defer db.Close()
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatal("DB not reachable:", err)
+	}
+	fmt.Println("✅ Database connected")
+
 	http.HandleFunc("/ws", handleConnections)
 	go handleBroadcast()
 
 	fmt.Println("✅ Server started on :8080")
-	http.ListenAndServe(":8080", nil)
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
