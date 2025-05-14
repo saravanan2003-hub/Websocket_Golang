@@ -8,6 +8,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"time"
 )
 
 type Message struct {
@@ -94,22 +95,8 @@ func handleBroadcast() {
 			continue
 		}
 
-		// 2. Fetch the messages from DB
-		getMsgQuery := "SELECT username, message FROM chat ORDER BY time DESC"
-		rows, err := db.Query(getMsgQuery)
-		if err != nil {
-			log.Println("Fetch failed:", err)
-			continue
-		}
-		defer rows.Close()
-
-		// 3. Combine messages into one string
-		var finalMsg string
-		for rows.Next() {
-			var username, content string
-			rows.Scan(&username, &content)
-			finalMsg = fmt.Sprintf("%s%s: %s\n", finalMsg, username, content)
-		}
+		msgTime := time.Now().Format("2006-01-02 15:04:05")
+		finalMsg := fmt.Sprintf("%s -> %s : %s", msgTime, msg.Username, msg.Content)
 
 		// 4. Send to all users
 		mutex.Lock()
